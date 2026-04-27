@@ -210,6 +210,27 @@ def auto_cleanup_trash(db: Session, user: models.User):
     db.commit()
     return deleted_count
 
+
+def auto_cleanup_all_users_trash():
+    """
+    Automatically clean up trash for all users based on their individual settings.
+    This is intended to be called by a scheduled task.
+    """
+    from app.database import SessionLocal
+    
+    db = SessionLocal()
+    try:
+        users = db.query(models.User).all()
+        total_cleaned = 0
+        
+        for user in users:
+            cleaned = auto_cleanup_trash(db, user)
+            total_cleaned += cleaned
+        
+        return total_cleaned
+    finally:
+        db.close()
+
 # -------- TRASH: Manual Trigger Auto Cleanup -------- #
 @router.post("/todos/trash/cleanup", response_model=schemas.TrashCleanupResult)
 def manual_cleanup_trash(

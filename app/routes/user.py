@@ -79,3 +79,32 @@ def logout(req: schemas.RefreshTokenRequest, db: Session = Depends(get_db)):
     db.commit()
 
     return {"detail": "Logged out successfully"}
+
+# --------- Get Current User Profile ----------#
+@router.get("/users/me", response_model=schemas.UserOut)
+def get_current_user_profile(
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    return current_user
+
+# --------- Get Trash Auto Clean Settings ----------#
+@router.get("/users/settings/trash-auto-clean-days")
+def get_trash_auto_clean_days(
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    return {"trash_auto_clean_days": current_user.trash_auto_clean_days}
+
+# --------- Update Trash Auto Clean Settings ----------#
+@router.put("/users/settings/trash-auto-clean-days")
+def update_trash_auto_clean_days(
+    settings_update: schemas.UserSettingsUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    current_user.trash_auto_clean_days = settings_update.trash_auto_clean_days
+    db.commit()
+    db.refresh(current_user)
+    return {
+        "trash_auto_clean_days": current_user.trash_auto_clean_days,
+        "detail": "Settings updated successfully"
+    }

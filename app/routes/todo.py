@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app import models, schemas, auth
 from app.dependencies import get_db
@@ -192,3 +192,38 @@ def empty_trash(
     
     db.commit()
     return {"detail": f"Emptied {deleted_count} items from trash"}
+
+# -------- TRASH: Auto Cleanup Logic -------- #
+def auto_cleanup_trash(db: Session, user: models.User):
+    """
+    Automatically permanently delete todos that have been in trash
+    for longer than the user's configured auto-clean days.
+    """
+    cutoff_date = datetime.utcnow() - timedelta(days=user.trash_auto_clean_days)
+    
+    deleted_count = db.query(models.Todo).filter(
+        models.Todo.owner_id == user.id,
+        models.Todo.is_deleted == True,
+        models.Todo.deleted_at <= cutoff_date
+    ).delete(synchronize_session=False)
+    
+    db.commit()
+    return deleted_count
+
+# -------- TRASH: Manual Trigger Auto Cleanup -------- #
+@router.post("/todos/trash/cleanup", response_model=schemas.TrashCleanupResult)
+def manual_cleanup_trash(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Manually trigger the auto-cleanup process for the current user's trash.
+    This will permanently delete all todos that have been in trash for longer
+    than the user's configured auto-clean days.
+    """
+    cleaned_count = auto_cleanup_trash(db, current_user)
+    
+    return {
+        "cleaned_count": cleaned_count,
+        "message": f"Auto-cleanup completed. Permanently deleted {cleaned_count} items from trash."
+    }

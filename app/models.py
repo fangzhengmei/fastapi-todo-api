@@ -8,8 +8,9 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String(50), unique=True, nullable=False)
-    email = Column(String(100), unique=True, nullable=False)  # 👈 Add this line
+    email = Column(String(100), unique=True, nullable=False)
     hashed_password = Column(String(100), nullable=False)
+    trash_auto_clean_days = Column(Integer, default=30)
 
     todos = relationship("Todo", back_populates="owner")
 

@@ -17,9 +17,19 @@ class UserLogin(BaseModel):
 
 class UserOut(UserBase):  # Inherits username and email
     id: int
+    trash_auto_clean_days: int = 30
 
     class Config:
         orm_mode = True
+
+
+class UserSettingsUpdate(BaseModel):
+    trash_auto_clean_days: int = Field(..., ge=1, le=365, example=30)
+
+
+class TrashCleanupResult(BaseModel):
+    cleaned_count: int
+    message: str
 
 
 # ----------- TODO SCHEMAS -----------

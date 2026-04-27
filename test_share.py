@@ -1,4 +1,5 @@
 import pytest
+from datetime import datetime, timedelta
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -880,3 +881,59 @@ class TestShareLinkTokenAuthorization:
         assert link_response.status_code == 200
         
         assert bearer_response.json()["id"] == link_response.json()["id"]
+    
+    def test_expired_share_link_token_rejected_on_read(self, client, test_user1):
+        token1 = get_auth_token(client, "test1@example.com", "testpassword123")
+        todo = create_todo(client, token1, "Expired Link Todo")
+        
+        headers1 = {"Authorization": f"Bearer {token1}"}
+        link_response = client.post(
+            f"/todos/{todo['id']}/share-link",
+            json={"permission": "read_only"},
+            headers=headers1
+        )
+        link_id = link_response.json()["id"]
+        share_token = link_response.json()["share_token"]
+        
+        db = TestingSessionLocal()
+        try:
+            link = db.query(models.TodoShareLink).filter_by(id=link_id).first()
+            link.expires_at = datetime.utcnow() - timedelta(hours=1)
+            db.commit()
+        finally:
+            db.close()
+        
+        link_headers = {"X-Share-Token": share_token}
+        get_response = client.get(f"/todos/{todo['id']}", headers=link_headers)
+        
+        assert get_response.status_code == 404
+    
+    def test_expired_share_link_token_rejected_on_write(self, client, test_user1):
+        token1 = get_auth_token(client, "test1@example.com", "testpassword123")
+        todo = create_todo(client, token1, "Expired Write Link Todo")
+        
+        headers1 = {"Authorization": f"Bearer {token1}"}
+        link_response = client.post(
+            f"/todos/{todo['id']}/share-link",
+            json={"permission": "read_write"},
+            headers=headers1
+        )
+        link_id = link_response.json()["id"]
+        share_token = link_response.json()["share_token"]
+        
+        db = TestingSessionLocal()
+        try:
+            link = db.query(models.TodoShareLink).filter_by(id=link_id).first()
+            link.expires_at = datetime.utcnow() - timedelta(hours=1)
+            db.commit()
+        finally:
+            db.close()
+        
+        link_headers = {"X-Share-Token": share_token}
+        update_response = client.put(
+            f"/todos/{todo['id']}",
+            json={"title": "Should Not Update"},
+            headers=link_headers
+        )
+        
+        assert update_response.status_code == 404

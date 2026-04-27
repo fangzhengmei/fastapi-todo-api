@@ -22,6 +22,8 @@ class Todo(Base):
     description = Column(String, nullable=True)
     status = Column(String, default="not_done")
     owner_id = Column(Integer, ForeignKey("users.id"))
+    is_deleted = Column(Boolean, default=False)
+    deleted_at = Column(DateTime, nullable=True)
 
     owner = relationship("User", back_populates="todos")
 

@@ -211,14 +211,20 @@ def auto_cleanup_trash(db: Session, user: models.User):
     return deleted_count
 
 
-def auto_cleanup_all_users_trash():
+def auto_cleanup_all_users_trash(db_session_factory=None):
     """
     Automatically clean up trash for all users based on their individual settings.
     This is intended to be called by a scheduled task.
-    """
-    from app.database import SessionLocal
     
-    db = SessionLocal()
+    Args:
+        db_session_factory: Optional database session factory for testing.
+                            If not provided, uses the default SessionLocal.
+    """
+    if db_session_factory is None:
+        from app.database import SessionLocal
+        db_session_factory = SessionLocal
+    
+    db = db_session_factory()
     try:
         users = db.query(models.User).all()
         total_cleaned = 0

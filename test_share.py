@@ -229,7 +229,7 @@ class TestUserSharing:
             headers=headers2
         )
         
-        assert response.status_code == 404
+        assert response.status_code == 403
     
     def test_shared_user_with_read_write_can_update(self, client, test_user1, test_user2):
         token1 = get_auth_token(client, "test1@example.com", "testpassword123")
@@ -649,7 +649,7 @@ class TestEdgeCases:
             json={"title": "Should Fail"},
             headers=headers2
         )
-        assert update_response.status_code == 404
+        assert update_response.status_code == 403
         
         client.post(
             f"/todos/{todo['id']}/share",
@@ -675,3 +675,208 @@ class TestEdgeCases:
         
         response = client.delete("/shares/9999", headers=headers)
         assert response.status_code == 404
+
+
+class TestShareLinkTokenAuthorization:
+    
+    def test_read_todo_using_share_link_token(self, client, test_user1):
+        token1 = get_auth_token(client, "test1@example.com", "testpassword123")
+        todo = create_todo(client, token1, "Shared via Link")
+        
+        headers1 = {"Authorization": f"Bearer {token1}"}
+        link_response = client.post(
+            f"/todos/{todo['id']}/share-link",
+            json={"permission": "read_only"},
+            headers=headers1
+        )
+        share_token = link_response.json()["share_token"]
+        
+        link_headers = {"X-Share-Token": share_token}
+        get_response = client.get(f"/todos/{todo['id']}", headers=link_headers)
+        
+        assert get_response.status_code == 200
+        assert get_response.json()["title"] == "Shared via Link"
+    
+    def test_update_todo_using_read_write_share_link_token(self, client, test_user1):
+        token1 = get_auth_token(client, "test1@example.com", "testpassword123")
+        todo = create_todo(client, token1, "Editable via Link")
+        
+        headers1 = {"Authorization": f"Bearer {token1}"}
+        link_response = client.post(
+            f"/todos/{todo['id']}/share-link",
+            json={"permission": "read_write"},
+            headers=headers1
+        )
+        share_token = link_response.json()["share_token"]
+        
+        link_headers = {"X-Share-Token": share_token}
+        update_response = client.put(
+            f"/todos/{todo['id']}",
+            json={"title": "Updated via Link", "status": "done"},
+            headers=link_headers
+        )
+        
+        assert update_response.status_code == 200
+        assert update_response.json()["title"] == "Updated via Link"
+        assert update_response.json()["status"] == "done"
+    
+    def test_read_only_share_link_token_cannot_update(self, client, test_user1):
+        token1 = get_auth_token(client, "test1@example.com", "testpassword123")
+        todo = create_todo(client, token1, "Read Only Todo")
+        
+        headers1 = {"Authorization": f"Bearer {token1}"}
+        link_response = client.post(
+            f"/todos/{todo['id']}/share-link",
+            json={"permission": "read_only"},
+            headers=headers1
+        )
+        share_token = link_response.json()["share_token"]
+        
+        link_headers = {"X-Share-Token": share_token}
+        update_response = client.put(
+            f"/todos/{todo['id']}",
+            json={"title": "Should Not Update"},
+            headers=link_headers
+        )
+        
+        assert update_response.status_code == 403
+    
+    def test_invalid_share_link_token_rejected(self, client, test_user1):
+        token1 = get_auth_token(client, "test1@example.com", "testpassword123")
+        todo = create_todo(client, token1, "Test Todo")
+        
+        invalid_headers = {"X-Share-Token": "invalid-token-123"}
+        get_response = client.get(f"/todos/{todo['id']}", headers=invalid_headers)
+        
+        assert get_response.status_code == 404
+    
+    def test_deactivated_share_link_token_rejected(self, client, test_user1):
+        token1 = get_auth_token(client, "test1@example.com", "testpassword123")
+        todo = create_todo(client, token1, "Test Todo")
+        
+        headers1 = {"Authorization": f"Bearer {token1}"}
+        link_response = client.post(
+            f"/todos/{todo['id']}/share-link",
+            json={"permission": "read_only"},
+            headers=headers1
+        )
+        link_id = link_response.json()["id"]
+        share_token = link_response.json()["share_token"]
+        
+        client.put(f"/share-links/{link_id}/deactivate", headers=headers1)
+        
+        link_headers = {"X-Share-Token": share_token}
+        get_response = client.get(f"/todos/{todo['id']}", headers=link_headers)
+        
+        assert get_response.status_code == 404
+    
+    def test_share_link_token_for_wrong_todo_rejected(self, client, test_user1):
+        token1 = get_auth_token(client, "test1@example.com", "testpassword123")
+        todo1 = create_todo(client, token1, "Todo 1")
+        todo2 = create_todo(client, token1, "Todo 2")
+        
+        headers1 = {"Authorization": f"Bearer {token1}"}
+        link_response = client.post(
+            f"/todos/{todo1['id']}/share-link",
+            json={"permission": "read_only"},
+            headers=headers1
+        )
+        share_token = link_response.json()["share_token"]
+        
+        link_headers = {"X-Share-Token": share_token}
+        get_response = client.get(f"/todos/{todo2['id']}", headers=link_headers)
+        
+        assert get_response.status_code == 404
+    
+    def test_password_protected_share_link_with_correct_password(self, client, test_user1):
+        token1 = get_auth_token(client, "test1@example.com", "testpassword123")
+        todo = create_todo(client, token1, "Protected Todo")
+        
+        headers1 = {"Authorization": f"Bearer {token1}"}
+        link_response = client.post(
+            f"/todos/{todo['id']}/share-link",
+            json={
+                "permission": "read_only",
+                "is_password_protected": True,
+                "password": "secret123"
+            },
+            headers=headers1
+        )
+        share_token = link_response.json()["share_token"]
+        
+        link_headers = {"X-Share-Token": share_token, "X-Share-Password": "secret123"}
+        get_response = client.get(f"/todos/{todo['id']}", headers=link_headers)
+        
+        assert get_response.status_code == 200
+        assert get_response.json()["title"] == "Protected Todo"
+    
+    def test_password_protected_share_link_with_wrong_password(self, client, test_user1):
+        token1 = get_auth_token(client, "test1@example.com", "testpassword123")
+        todo = create_todo(client, token1, "Protected Todo")
+        
+        headers1 = {"Authorization": f"Bearer {token1}"}
+        link_response = client.post(
+            f"/todos/{todo['id']}/share-link",
+            json={
+                "permission": "read_only",
+                "is_password_protected": True,
+                "password": "secret123"
+            },
+            headers=headers1
+        )
+        share_token = link_response.json()["share_token"]
+        
+        wrong_headers = {"X-Share-Token": share_token, "X-Share-Password": "wrongpass"}
+        get_response = client.get(f"/todos/{todo['id']}", headers=wrong_headers)
+        
+        assert get_response.status_code == 404
+    
+    def test_password_protected_share_link_without_password(self, client, test_user1):
+        token1 = get_auth_token(client, "test1@example.com", "testpassword123")
+        todo = create_todo(client, token1, "Protected Todo")
+        
+        headers1 = {"Authorization": f"Bearer {token1}"}
+        link_response = client.post(
+            f"/todos/{todo['id']}/share-link",
+            json={
+                "permission": "read_write",
+                "is_password_protected": True,
+                "password": "secret123"
+            },
+            headers=headers1
+        )
+        share_token = link_response.json()["share_token"]
+        
+        no_password_headers = {"X-Share-Token": share_token}
+        get_response = client.get(f"/todos/{todo['id']}", headers=no_password_headers)
+        
+        assert get_response.status_code == 404
+    
+    def test_no_authentication_returns_401(self, client, test_user1):
+        token1 = get_auth_token(client, "test1@example.com", "testpassword123")
+        todo = create_todo(client, token1, "Test Todo")
+        
+        get_response = client.get(f"/todos/{todo['id']}")
+        
+        assert get_response.status_code == 401
+    
+    def test_bearer_token_and_share_token_both_work(self, client, test_user1):
+        token1 = get_auth_token(client, "test1@example.com", "testpassword123")
+        todo = create_todo(client, token1, "Test Todo")
+        
+        headers1 = {"Authorization": f"Bearer {token1}"}
+        link_response = client.post(
+            f"/todos/{todo['id']}/share-link",
+            json={"permission": "read_write"},
+            headers=headers1
+        )
+        share_token = link_response.json()["share_token"]
+        
+        bearer_response = client.get(f"/todos/{todo['id']}", headers=headers1)
+        assert bearer_response.status_code == 200
+        
+        link_headers = {"X-Share-Token": share_token}
+        link_response = client.get(f"/todos/{todo['id']}", headers=link_headers)
+        assert link_response.status_code == 200
+        
+        assert bearer_response.json()["id"] == link_response.json()["id"]

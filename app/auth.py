@@ -3,13 +3,12 @@ from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from fastapi import HTTPException, status, Depends
-from fastapi.security import OAuth2PasswordBearer
 from app import schemas, models
 from app.config import settings
 from app.models import User
 from app.database import SessionLocal
 from sqlalchemy.orm import Session
-from app.dependencies import get_db
+from app.dependencies import get_db, oauth2_scheme
 import uuid
 
 # SECRET and Algorithm for JWT
@@ -23,9 +22,6 @@ REFRESH_TOKEN_EXPIRE_DAYS = settings.REFRESH_TOKEN_EXPIRE_DAYS
 
 # Password hashing context
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-# OAuth2 scheme (used in protected routes)
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
 
 # -------- Password Hashing -------- #

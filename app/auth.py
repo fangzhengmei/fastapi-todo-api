@@ -129,3 +129,17 @@ def verify_refresh_token_db(token: str, db: Session):
     return username
 
 
+def get_todo_by_id(
+    todo_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+) -> models.Todo:
+    todo = db.query(models.Todo).filter_by(
+        id=todo_id,
+        owner_id=current_user.id
+    ).first()
+    if not todo:
+        raise HTTPException(status_code=404, detail="Todo not found")
+    return todo
+
+

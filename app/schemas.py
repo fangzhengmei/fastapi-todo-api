@@ -24,7 +24,7 @@ class UserOut(UserBase):  # Inherits username and email
 # ----------- TODO SCHEMAS -----------
 
 class TodoBase(BaseModel):
-    title: str = Field(..., example="Buy groceries")
+    title: str = Field(..., min_length=1, example="Buy groceries")
     description: Optional[str] = Field(None, example="Milk, Bread, Eggs")
     status: Optional[str] = Field("not_done", example="done")
 

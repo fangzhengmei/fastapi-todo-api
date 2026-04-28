@@ -99,8 +99,12 @@ def decode_refresh_token(token: str):
         raise HTTPException(status_code=401, detail="Invalid refresh token")
     
 def create_refresh_token_db(user: models.User, db: Session):
-    raw_token = str(uuid.uuid4())
-    encoded_token = jwt.encode({"sub": user.username}, REFRESH_SECRET_KEY, algorithm=ALGORITHM)
+    jti = str(uuid.uuid4())
+    encoded_token = jwt.encode(
+        {"sub": user.username, "jti": jti},
+        REFRESH_SECRET_KEY,
+        algorithm=ALGORITHM
+    )
 
     expires_at = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     refresh_token = models.RefreshToken(

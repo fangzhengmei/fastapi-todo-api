@@ -1,12 +1,16 @@
 import csv
 import io
 from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app import models, schemas, auth
 from app.dependencies import get_db
+
+# 常量定义
+MAX_FILE_SIZE = 1 * 1024 * 1024  # 1MB
+VALID_STATUSES = ["not_done", "done"]
 
 router = APIRouter(tags=["Todos"])
 
@@ -102,9 +106,8 @@ def validate_todo_row(row: Dict[str, Any], row_number: int) -> Dict[str, Any]:
     
     # Validate status if provided
     status = row.get("status", "not_done")
-    valid_statuses = ["not_done", "done"]
-    if status and status not in valid_statuses:
-        errors.append(f"Status must be one of: {', '.join(valid_statuses)}")
+    if status and status not in VALID_STATUSES:
+        errors.append(f"Status must be one of: {', '.join(VALID_STATUSES)}")
     
     # Validate title length
     title = str(row.get("title", "")).strip()
@@ -118,7 +121,7 @@ def validate_todo_row(row: Dict[str, Any], row_number: int) -> Dict[str, Any]:
         "data": {
             "title": title if title else None,
             "description": str(row.get("description", "")).strip() if row.get("description") else None,
-            "status": status if status in valid_statuses else "not_done"
+            "status": status if status in VALID_STATUSES else "not_done"
         }
     }
 
@@ -127,6 +130,7 @@ def validate_todo_row(row: Dict[str, Any], row_number: int) -> Dict[str, Any]:
 @router.post("/todos/import/", response_model=Dict[str, Any])
 def import_todos_from_csv(
     file: UploadFile = File(...),
+    dry_run: bool = Form(False),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user)
 ):
@@ -136,6 +140,9 @@ def import_todos_from_csv(
     - title: required
     - description: optional
     - status: optional (not_done or done, default: not_done)
+    
+    Parameters:
+    - dry_run: If true, only validate the file without saving to database
     """
     # Validate file type
     if not file.filename.endswith('.csv'):
@@ -144,6 +151,14 @@ def import_todos_from_csv(
     # Read and parse CSV
     try:
         contents = file.file.read()
+        
+        # Validate file size (1MB limit)
+        if len(contents) > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=413, 
+                detail=f"File too large. Maximum size is {MAX_FILE_SIZE / (1024 * 1024)}MB"
+            )
+        
         # Try to decode with UTF-8, fallback to latin-1
         try:
             decoded = contents.decode('utf-8')
@@ -151,6 +166,9 @@ def import_todos_from_csv(
             decoded = contents.decode('latin-1')
         
         csv_reader = csv.DictReader(io.StringIO(decoded))
+    except HTTPException:
+        # Re-raise HTTP exceptions (like 413)
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to read CSV file: {str(e)}")
     
@@ -173,29 +191,37 @@ def import_todos_from_csv(
         validation = validate_todo_row(row, row_number)
         
         if validation["valid"]:
-            try:
-                # Create the todo
-                todo_data = validation["data"]
-                new_todo = models.Todo(
-                    title=todo_data["title"],
-                    description=todo_data["description"],
-                    status=todo_data["status"],
-                    owner_id=current_user.id
-                )
-                db.add(new_todo)
-                db.flush()  # Get the ID without committing
-                
+            if dry_run:
+                # Dry run: just add to successful list without creating in DB
                 successful.append({
                     "row_number": row_number,
-                    "title": todo_data["title"],
-                    "id": new_todo.id
+                    "title": validation["data"]["title"],
+                    "id": None  # No ID in dry run mode
                 })
-            except Exception as e:
-                failed.append({
-                    "row_number": row_number,
-                    "title": row.get("title", ""),
-                    "errors": [f"Database error: {str(e)}"]
-                })
+            else:
+                try:
+                    # Create the todo
+                    todo_data = validation["data"]
+                    new_todo = models.Todo(
+                        title=todo_data["title"],
+                        description=todo_data["description"],
+                        status=todo_data["status"],
+                        owner_id=current_user.id
+                    )
+                    db.add(new_todo)
+                    db.flush()  # Get the ID without committing
+                    
+                    successful.append({
+                        "row_number": row_number,
+                        "title": todo_data["title"],
+                        "id": new_todo.id
+                    })
+                except Exception as e:
+                    failed.append({
+                        "row_number": row_number,
+                        "title": row.get("title", ""),
+                        "errors": [f"Database error: {str(e)}"]
+                    })
         else:
             failed.append({
                 "row_number": row_number,
@@ -203,8 +229,9 @@ def import_todos_from_csv(
                 "errors": validation["errors"]
             })
     
-    # Commit all successful todos
-    db.commit()
+    # Commit all successful todos (only if not dry run)
+    if not dry_run:
+        db.commit()
     
     return {
         "total": len(successful) + len(failed),
@@ -230,6 +257,13 @@ def export_todos_to_csv(
     - description: Todo description
     - status: Todo status (not_done or done)
     """
+    # Validate status parameter if provided
+    if status is not None and status not in VALID_STATUSES:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid status value. Must be one of: {', '.join(VALID_STATUSES)}"
+        )
+    
     # Get todos from database
     query = db.query(models.Todo).filter(models.Todo.owner_id == current_user.id)
     

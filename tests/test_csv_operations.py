@@ -254,6 +254,126 @@ Buy groceries,Milk, Bread, Eggs,not_done"""
         
         # 检查响应（应该失败）
         assert response.status_code == 401
+    
+    def test_import_dry_run_valid_csv(self, auth_headers):
+        """Test dry_run mode with valid CSV - should not save to database"""
+        # 创建 CSV 内容
+        csv_content = """title,description,status
+Buy groceries,"Milk, Bread, Eggs",not_done
+Finish report,"Complete the quarterly report",done"""
+        
+        # 上传 CSV 文件，使用 dry_run=True
+        response = client.post(
+            "/todos/import/",
+            files={"file": ("test.csv", csv_content, "text/csv")},
+            data={"dry_run": "true"},
+            headers=auth_headers
+        )
+        
+        # 检查响应
+        assert response.status_code == 200
+        data = response.json()
+        
+        # 验证导入结果
+        assert data["total"] == 2
+        assert data["successful"] == 2
+        assert data["failed"] == 0
+        
+        # 验证 successful_items 中的 id 是 None（dry run 模式）
+        for item in data["successful_items"]:
+            assert item["id"] is None
+        
+        # 验证 todos 没有被保存到数据库
+        response = client.get("/todos/", headers=auth_headers)
+        assert response.status_code == 200
+        todos = response.json()
+        assert len(todos) == 0  # 应该是空的，因为是 dry run
+    
+    def test_import_dry_run_with_invalid_rows(self, auth_headers):
+        """Test dry_run mode with invalid rows - should return same structure as normal import"""
+        # 创建 CSV 内容（包含无效行）
+        csv_content = """title,description,status
+Buy groceries,"Milk, Bread, Eggs",not_done
+,"Empty title",not_done
+Finish report,"Complete the quarterly report",done"""
+        
+        # 上传 CSV 文件，使用 dry_run=True
+        response = client.post(
+            "/todos/import/",
+            files={"file": ("test.csv", csv_content, "text/csv")},
+            data={"dry_run": "true"},
+            headers=auth_headers
+        )
+        
+        # 检查响应
+        assert response.status_code == 200
+        data = response.json()
+        
+        # 验证导入结果
+        assert data["total"] == 3
+        assert data["successful"] == 2
+        assert data["failed"] == 1
+        
+        # 验证失败的行
+        failed_items = data["failed_items"]
+        assert len(failed_items) == 1
+        assert "Title is required" in failed_items[0]["errors"][0]
+        
+        # 验证 todos 没有被保存到数据库
+        response = client.get("/todos/", headers=auth_headers)
+        todos = response.json()
+        assert len(todos) == 0
+    
+    def test_import_dry_run_default_false(self, auth_headers):
+        """Test that dry_run defaults to false (normal import)"""
+        # 创建 CSV 内容
+        csv_content = """title,description,status
+Buy groceries,"Milk, Bread, Eggs",not_done"""
+        
+        # 上传 CSV 文件，不指定 dry_run（默认 false）
+        response = client.post(
+            "/todos/import/",
+            files={"file": ("test.csv", csv_content, "text/csv")},
+            headers=auth_headers
+        )
+        
+        # 检查响应
+        assert response.status_code == 200
+        data = response.json()
+        
+        # 验证导入结果
+        assert data["total"] == 1
+        assert data["successful"] == 1
+        
+        # 验证 successful_items 中的 id 不是 None（正常导入）
+        for item in data["successful_items"]:
+            assert item["id"] is not None
+        
+        # 验证 todos 确实被保存到数据库
+        response = client.get("/todos/", headers=auth_headers)
+        assert response.status_code == 200
+        todos = response.json()
+        assert len(todos) == 1
+    
+    def test_import_file_too_large(self, auth_headers):
+        """Test importing a file larger than 1MB (should return 413)"""
+        # 创建一个超过 1MB 的 CSV 内容
+        # 1MB = 1024 * 1024 = 1,048,576 字节
+        large_content = "title,description\n"
+        # 重复添加行直到超过 1MB
+        while len(large_content) < 1.1 * 1024 * 1024:  # 1.1MB 确保超过限制
+            large_content += 'Test Title,"This is a long description to make the file larger"\n'
+        
+        # 上传大文件
+        response = client.post(
+            "/todos/import/",
+            files={"file": ("large.csv", large_content, "text/csv")},
+            headers=auth_headers
+        )
+        
+        # 检查响应（应该返回 413）
+        assert response.status_code == 413
+        assert "File too large" in response.json()["detail"]
 
 
 class TestCSVExport:
@@ -391,3 +511,40 @@ class TestCSVExport:
             # 描述如果是 None 应该是空字符串
             expected_description = test_todo["description"] if test_todo["description"] else ""
             assert exported["description"] == expected_description
+    
+    def test_export_with_invalid_status(self, auth_headers):
+        """Test exporting with invalid status parameter (should return 400)"""
+        # 创建测试 todos
+        self.create_test_todos(auth_headers, 2)
+        
+        # 尝试导出，使用非法的 status 参数
+        invalid_statuses = ["invalid", "pending", "completed", "", "  "]
+        
+        for invalid_status in invalid_statuses:
+            response = client.get(
+                f"/todos/export/?status={invalid_status}", 
+                headers=auth_headers
+            )
+            
+            # 检查响应（应该返回 400）
+            assert response.status_code == 400
+            assert "Invalid status value" in response.json()["detail"]
+            assert "not_done" in response.json()["detail"]
+            assert "done" in response.json()["detail"]
+    
+    def test_export_with_valid_status(self, auth_headers):
+        """Test that valid status values still work (not_done, done, and None)"""
+        # 创建测试 todos
+        self.create_test_todos(auth_headers, 3)
+        
+        # 测试不指定 status（None）
+        response = client.get("/todos/export/", headers=auth_headers)
+        assert response.status_code == 200
+        
+        # 测试 status=not_done
+        response = client.get("/todos/export/?status=not_done", headers=auth_headers)
+        assert response.status_code == 200
+        
+        # 测试 status=done
+        response = client.get("/todos/export/?status=done", headers=auth_headers)
+        assert response.status_code == 200

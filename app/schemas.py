@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional, List
+from datetime import datetime
 
 # ----------- USER SCHEMAS -----------
 
@@ -27,14 +28,16 @@ class TodoBase(BaseModel):
     title: str = Field(..., example="Buy groceries")
     description: Optional[str] = Field(None, example="Milk, Bread, Eggs")
     status: Optional[str] = Field("not_done", example="done")
+    reminder_time: Optional[datetime] = Field(None, example="2026-05-01T10:00:00")
 
 class TodoCreate(TodoBase):
     pass
 
 class TodoUpdate(BaseModel):
-    title: Optional[str]
-    description: Optional[str]
-    status: Optional[str]
+    title: Optional[str] = Field(None)
+    description: Optional[str] = Field(None)
+    status: Optional[str] = Field(None)
+    reminder_time: Optional[datetime] = Field(None)
 
 class TodoOut(TodoBase):
     id: int

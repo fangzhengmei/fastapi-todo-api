@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
+from datetime import datetime
 
 from app import models, schemas, auth
 from app.dependencies import get_db
@@ -15,7 +16,7 @@ def create_todo(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user)
 ):
-    new_todo = models.Todo(**todo.dict(), owner_id=current_user.id)
+    new_todo = models.Todo(**todo.model_dump(), owner_id=current_user.id)
     db.add(new_todo)
     db.commit()
     db.refresh(new_todo)
@@ -65,7 +66,8 @@ def update_todo(
     if not todo:
         raise HTTPException(status_code=404, detail="Todo not found")
 
-    for key, value in updated_data.dict(exclude_unset=True).items():
+    update_dict = updated_data.model_dump(exclude_unset=True)
+    for key, value in update_dict.items():
         setattr(todo, key, value)
 
     db.commit()
@@ -86,3 +88,31 @@ def delete_todo(
     db.delete(todo)
     db.commit()
     return {"detail": "Todo deleted"}
+
+
+# -------- GET UPCOMING REMINDERS -------- #
+@router.get("/todos/upcoming/", response_model=List[schemas.TodoOut])
+def get_upcoming_todos(
+    from_time: Optional[datetime] = Query(None, description="Start of time range (default: now)"),
+    to_time: Optional[datetime] = Query(None, description="End of time range"),
+    limit: int = Query(10, ge=1),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    query = db.query(models.Todo).filter(
+        models.Todo.owner_id == current_user.id,
+        models.Todo.reminder_time.isnot(None),
+        models.Todo.status != "done"
+    )
+
+    if from_time is None:
+        from_time = datetime.now()
+    query = query.filter(models.Todo.reminder_time >= from_time)
+
+    if to_time:
+        query = query.filter(models.Todo.reminder_time <= to_time)
+
+    query = query.order_by(models.Todo.reminder_time)
+
+    return query.offset(offset).limit(limit).all()

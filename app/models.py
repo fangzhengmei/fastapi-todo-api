@@ -21,6 +21,7 @@ class Todo(Base):
     title = Column(String, nullable=False)
     description = Column(String, nullable=True)
     status = Column(String, default="not_done")
+    reminder_time = Column(DateTime, nullable=True)
     owner_id = Column(Integer, ForeignKey("users.id"))
 
     owner = relationship("User", back_populates="todos")

@@ -1,10 +1,9 @@
 import pytest
-from httpx import AsyncClient
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.database import Base, engine, SessionLocal
+from app.database import SessionLocal
 from app import models, auth
 
 client = TestClient(app)
@@ -52,12 +51,13 @@ def auth_headers(test_user):
 
 class TestTodoReminderCreate:
     def test_create_todo_with_reminder_time(self, auth_headers):
-        reminder_time = (datetime.now() + timedelta(hours=1)).isoformat()
+        utc_now = datetime.now(timezone.utc)
+        reminder_time = (utc_now + timedelta(hours=1)).replace(tzinfo=timezone.utc)
         response = client.post("/todos/", json={
             "title": "Test Todo with Reminder",
             "description": "This todo has a reminder",
             "status": "not_done",
-            "reminder_time": reminder_time
+            "reminder_time": reminder_time.isoformat()
         }, headers=auth_headers)
         
         assert response.status_code == 200
@@ -89,9 +89,10 @@ class TestTodoReminderUpdate:
         assert response.status_code == 200
         todo_id = response.json()["id"]
         
-        reminder_time = (datetime.now() + timedelta(days=1)).isoformat()
+        utc_now = datetime.now(timezone.utc)
+        reminder_time = (utc_now + timedelta(days=1)).replace(tzinfo=timezone.utc)
         update_response = client.put(f"/todos/{todo_id}", json={
-            "reminder_time": reminder_time
+            "reminder_time": reminder_time.isoformat()
         }, headers=auth_headers)
         
         assert update_response.status_code == 200
@@ -99,12 +100,13 @@ class TestTodoReminderUpdate:
         assert data["reminder_time"] is not None
     
     def test_update_todo_remove_reminder_time(self, auth_headers):
-        reminder_time = (datetime.now() + timedelta(hours=2)).isoformat()
+        utc_now = datetime.now(timezone.utc)
+        reminder_time = (utc_now + timedelta(hours=2)).replace(tzinfo=timezone.utc)
         response = client.post("/todos/", json={
             "title": "Todo to Remove Reminder",
             "description": "Will remove reminder later",
             "status": "not_done",
-            "reminder_time": reminder_time
+            "reminder_time": reminder_time.isoformat()
         }, headers=auth_headers)
         assert response.status_code == 200
         todo_id = response.json()["id"]
@@ -121,19 +123,20 @@ class TestTodoReminderUpdate:
 
 class TestTodoUpcomingReminders:
     def test_get_upcoming_todos_default(self, auth_headers):
-        future_time = (datetime.now() + timedelta(hours=2)).isoformat()
-        past_time = (datetime.now() - timedelta(hours=1)).isoformat()
+        utc_now = datetime.now(timezone.utc)
+        future_time = (utc_now + timedelta(hours=2)).replace(tzinfo=timezone.utc)
+        past_time = (utc_now - timedelta(hours=1)).replace(tzinfo=timezone.utc)
         
         client.post("/todos/", json={
             "title": "Future Reminder Todo",
             "status": "not_done",
-            "reminder_time": future_time
+            "reminder_time": future_time.isoformat()
         }, headers=auth_headers)
         
         client.post("/todos/", json={
             "title": "Past Reminder Todo",
             "status": "not_done",
-            "reminder_time": past_time
+            "reminder_time": past_time.isoformat()
         }, headers=auth_headers)
         
         response = client.get("/todos/upcoming/", headers=auth_headers)
@@ -147,34 +150,34 @@ class TestTodoUpcomingReminders:
         assert "Past Reminder Todo" not in future_titles
     
     def test_get_upcoming_todos_with_time_range(self, auth_headers):
-        now = datetime.now()
-        time1 = (now + timedelta(hours=1)).isoformat()
-        time2 = (now + timedelta(hours=3)).isoformat()
-        time3 = (now + timedelta(hours=5)).isoformat()
+        utc_now = datetime.now(timezone.utc)
+        time1 = (utc_now + timedelta(hours=1)).replace(tzinfo=timezone.utc)
+        time2 = (utc_now + timedelta(hours=3)).replace(tzinfo=timezone.utc)
+        time3 = (utc_now + timedelta(hours=5)).replace(tzinfo=timezone.utc)
         
         client.post("/todos/", json={
             "title": "Range Test 1",
             "status": "not_done",
-            "reminder_time": time1
+            "reminder_time": time1.isoformat()
         }, headers=auth_headers)
         
         client.post("/todos/", json={
             "title": "Range Test 2",
             "status": "not_done",
-            "reminder_time": time2
+            "reminder_time": time2.isoformat()
         }, headers=auth_headers)
         
         client.post("/todos/", json={
             "title": "Range Test 3",
             "status": "not_done",
-            "reminder_time": time3
+            "reminder_time": time3.isoformat()
         }, headers=auth_headers)
         
-        from_time = (now + timedelta(minutes=30)).isoformat()
-        to_time = (now + timedelta(hours=4)).isoformat()
+        from_time = (utc_now + timedelta(minutes=30)).replace(tzinfo=timezone.utc)
+        to_time = (utc_now + timedelta(hours=4)).replace(tzinfo=timezone.utc)
         
         response = client.get(
-            f"/todos/upcoming/?from_time={from_time}&to_time={to_time}",
+            f"/todos/upcoming/?from_time={from_time.isoformat().replace('+', '%2B')}&to_time={to_time.isoformat().replace('+', '%2B')}",
             headers=auth_headers
         )
         
@@ -187,12 +190,13 @@ class TestTodoUpcomingReminders:
         assert "Range Test 3" not in titles
     
     def test_done_todos_not_in_upcoming(self, auth_headers):
-        future_time = (datetime.now() + timedelta(hours=1)).isoformat()
+        utc_now = datetime.now(timezone.utc)
+        future_time = (utc_now + timedelta(hours=1)).replace(tzinfo=timezone.utc)
         
         response = client.post("/todos/", json={
             "title": "Done Todo with Reminder",
             "status": "not_done",
-            "reminder_time": future_time
+            "reminder_time": future_time.isoformat()
         }, headers=auth_headers)
         todo_id = response.json()["id"]
         

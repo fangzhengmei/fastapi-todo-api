@@ -127,7 +127,7 @@ def validate_todo_row(row: Dict[str, Any], row_number: int) -> Dict[str, Any]:
 
 
 # -------- CSV IMPORT -------- #
-@router.post("/todos/import/", response_model=Dict[str, Any])
+@router.post("/todos/import/", response_model=schemas.TodoImportResponse)
 def import_todos_from_csv(
     file: UploadFile = File(...),
     dry_run: bool = Form(False),

@@ -1,0 +1,393 @@
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+import io
+import csv
+
+from app.main import app
+from app.database import Base
+from app.dependencies import get_db
+from app import models, auth
+
+# 创建测试数据库
+SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
+
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL,
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
+)
+TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# 覆盖数据库依赖
+def override_get_db():
+    try:
+        db = TestingSessionLocal()
+        yield db
+    finally:
+        db.close()
+
+app.dependency_overrides[get_db] = override_get_db
+
+# 创建测试客户端
+client = TestClient(app)
+
+# 创建测试用户
+TEST_USER_USERNAME = "testuser"
+TEST_USER_EMAIL = "testuser@example.com"
+TEST_USER_PASSWORD = "testpassword123"
+
+
+@pytest.fixture(scope="function")
+def test_db():
+    # 创建所有表
+    Base.metadata.create_all(bind=engine)
+    yield
+    # 删除所有表
+    Base.metadata.drop_all(bind=engine)
+
+
+@pytest.fixture(scope="function")
+def auth_headers(test_db):
+    # 注册用户
+    response = client.post(
+        "/register",
+        json={
+            "username": TEST_USER_USERNAME,
+            "email": TEST_USER_EMAIL,
+            "password": TEST_USER_PASSWORD
+        }
+    )
+    assert response.status_code == 200
+    
+    # 登录获取 token
+    response = client.post(
+        "/login",
+        json={
+            "email": TEST_USER_EMAIL,
+            "password": TEST_USER_PASSWORD
+        }
+    )
+    assert response.status_code == 200
+    token = response.json()["access_token"]
+    
+    return {"Authorization": f"Bearer {token}"}
+
+
+class TestCSVImport:
+    """Test CSV import functionality"""
+    
+    def test_import_valid_csv(self, auth_headers):
+        """Test importing a valid CSV file with multiple todos"""
+        # 创建 CSV 内容（注意：包含逗号的字段需要用引号包裹）
+        csv_content = """title,description,status
+Buy groceries,"Milk, Bread, Eggs",not_done
+Finish report,"Complete the quarterly report",done
+Call client,"Discuss project details",not_done"""
+        
+        # 上传 CSV 文件
+        response = client.post(
+            "/todos/import/",
+            files={"file": ("test.csv", csv_content, "text/csv")},
+            headers=auth_headers
+        )
+        
+        # 检查响应
+        assert response.status_code == 200
+        data = response.json()
+        
+        # 验证导入结果
+        assert data["total"] == 3
+        assert data["successful"] == 3
+        assert data["failed"] == 0
+        assert len(data["successful_items"]) == 3
+        assert len(data["failed_items"]) == 0
+        
+        # 验证 todos 确实被创建
+        response = client.get("/todos/", headers=auth_headers)
+        assert response.status_code == 200
+        todos = response.json()
+        assert len(todos) == 3
+        
+        # 验证 todo 数据
+        titles = [todo["title"] for todo in todos]
+        assert "Buy groceries" in titles
+        assert "Finish report" in titles
+        assert "Call client" in titles
+    
+    def test_import_csv_without_status(self, auth_headers):
+        """Test importing CSV without status column (should use default)"""
+        # 创建 CSV 内容（没有 status 列，包含逗号的字段用引号包裹）
+        csv_content = """title,description
+Buy groceries,"Milk, Bread, Eggs"
+Finish report,"Complete the quarterly report"""
+        
+        # 上传 CSV 文件
+        response = client.post(
+            "/todos/import/",
+            files={"file": ("test.csv", csv_content, "text/csv")},
+            headers=auth_headers
+        )
+        
+        # 检查响应
+        assert response.status_code == 200
+        data = response.json()
+        
+        # 验证导入结果
+        assert data["total"] == 2
+        assert data["successful"] == 2
+        
+        # 验证 todos 状态为默认值
+        response = client.get("/todos/", headers=auth_headers)
+        todos = response.json()
+        for todo in todos:
+            assert todo["status"] == "not_done"
+    
+    def test_import_csv_with_invalid_rows(self, auth_headers):
+        """Test importing CSV with some invalid rows"""
+        # 创建 CSV 内容（包含无效行，包含逗号的字段用引号包裹）
+        csv_content = """title,description,status
+Buy groceries,"Milk, Bread, Eggs",not_done
+,"Empty title",not_done
+Finish report,"Complete the quarterly report",invalid_status
+Call client,"Discuss project details",done"""
+        
+        # 上传 CSV 文件
+        response = client.post(
+            "/todos/import/",
+            files={"file": ("test.csv", csv_content, "text/csv")},
+            headers=auth_headers
+        )
+        
+        # 检查响应
+        assert response.status_code == 200
+        data = response.json()
+        
+        # 验证导入结果
+        assert data["total"] == 4
+        assert data["successful"] == 2
+        assert data["failed"] == 2
+        
+        # 验证失败的行
+        failed_items = data["failed_items"]
+        assert len(failed_items) == 2
+        
+        # 检查第一个失败的行（空标题）
+        assert "Title is required" in failed_items[0]["errors"][0]
+        
+        # 检查第二个失败的行（无效状态）
+        assert "Status must be one of" in failed_items[1]["errors"][0]
+        
+        # 验证只有 2 个 todos 被创建
+        response = client.get("/todos/", headers=auth_headers)
+        todos = response.json()
+        assert len(todos) == 2
+    
+    def test_import_csv_without_title_column(self, auth_headers):
+        """Test importing CSV without title column (should fail)"""
+        # 创建 CSV 内容（没有 title 列）
+        csv_content = """description,status
+Milk, Bread, Eggs,not_done
+Complete the quarterly report,done"""
+        
+        # 上传 CSV 文件
+        response = client.post(
+            "/todos/import/",
+            files={"file": ("test.csv", csv_content, "text/csv")},
+            headers=auth_headers
+        )
+        
+        # 检查响应（应该失败）
+        assert response.status_code == 400
+        assert "title" in response.json()["detail"]
+    
+    def test_import_non_csv_file(self, auth_headers):
+        """Test importing a non-CSV file (should fail)"""
+        # 创建非 CSV 内容
+        content = "This is not a CSV file"
+        
+        # 上传文件
+        response = client.post(
+            "/todos/import/",
+            files={"file": ("test.txt", content, "text/plain")},
+            headers=auth_headers
+        )
+        
+        # 检查响应（应该失败）
+        assert response.status_code == 400
+        assert "CSV" in response.json()["detail"]
+    
+    def test_import_empty_csv(self, auth_headers):
+        """Test importing an empty CSV file"""
+        # 创建空 CSV 内容（只有标题行）
+        csv_content = """title,description,status"""
+        
+        # 上传 CSV 文件
+        response = client.post(
+            "/todos/import/",
+            files={"file": ("test.csv", csv_content, "text/csv")},
+            headers=auth_headers
+        )
+        
+        # 检查响应
+        assert response.status_code == 200
+        data = response.json()
+        
+        # 验证导入结果
+        assert data["total"] == 0
+        assert data["successful"] == 0
+        assert data["failed"] == 0
+    
+    def test_import_without_auth(self):
+        """Test importing CSV without authentication (should fail)"""
+        # 创建 CSV 内容
+        csv_content = """title,description,status
+Buy groceries,Milk, Bread, Eggs,not_done"""
+        
+        # 上传 CSV 文件（没有认证头）
+        response = client.post(
+            "/todos/import/",
+            files={"file": ("test.csv", csv_content, "text/csv")}
+        )
+        
+        # 检查响应（应该失败）
+        assert response.status_code == 401
+
+
+class TestCSVExport:
+    """Test CSV export functionality"""
+    
+    def create_test_todos(self, auth_headers, count=3):
+        """Helper function to create test todos"""
+        for i in range(count):
+            response = client.post(
+                "/todos/",
+                json={
+                    "title": f"Test Todo {i+1}",
+                    "description": f"Description for todo {i+1}",
+                    "status": "done" if i % 2 == 0 else "not_done"
+                },
+                headers=auth_headers
+            )
+            assert response.status_code == 200
+    
+    def test_export_todos(self, auth_headers):
+        """Test exporting todos to CSV"""
+        # 创建测试 todos
+        self.create_test_todos(auth_headers, 3)
+        
+        # 导出 CSV
+        response = client.get("/todos/export/", headers=auth_headers)
+        
+        # 检查响应
+        assert response.status_code == 200
+        assert "text/csv" in response.headers["content-type"]
+        assert "attachment" in response.headers["content-disposition"]
+        assert "todos_export.csv" in response.headers["content-disposition"]
+        
+        # 解析 CSV 内容
+        csv_content = response.text
+        
+        # 使用 csv.DictReader 解析，自动处理行尾符
+        reader = csv.DictReader(io.StringIO(csv_content))
+        todos = list(reader)
+        
+        # 检查标题行
+        assert "id" in reader.fieldnames
+        assert "title" in reader.fieldnames
+        assert "description" in reader.fieldnames
+        assert "status" in reader.fieldnames
+        
+        # 检查数据行（3 个 todos）
+        assert len(todos) == 3
+        
+        # 检查每个 todo 的字段
+        for todo in todos:
+            assert "id" in todo
+            assert "title" in todo
+            assert "description" in todo
+            assert "status" in todo
+            assert todo["title"].startswith("Test Todo")
+            assert todo["description"].startswith("Description for todo")
+    
+    def test_export_with_status_filter(self, auth_headers):
+        """Test exporting todos filtered by status"""
+        # 创建测试 todos（2 个 done，1 个 not_done）
+        self.create_test_todos(auth_headers, 3)
+        
+        # 只导出 done 状态的 todos
+        response = client.get("/todos/export/?status=done", headers=auth_headers)
+        
+        # 检查响应
+        assert response.status_code == 200
+        
+        # 解析 CSV 内容
+        reader = csv.DictReader(io.StringIO(response.text))
+        todos = list(reader)
+        
+        # 应该只有 2 个 done 状态的 todos
+        assert len(todos) == 2
+        for todo in todos:
+            assert todo["status"] == "done"
+    
+    def test_export_empty_todos(self, auth_headers):
+        """Test exporting when there are no todos"""
+        # 导出 CSV（没有 todos）
+        response = client.get("/todos/export/", headers=auth_headers)
+        
+        # 检查响应
+        assert response.status_code == 200
+        
+        # 解析 CSV 内容
+        csv_content = response.text
+        lines = csv_content.strip().split("\n")
+        
+        # 应该只有标题行
+        assert len(lines) == 1  # 只有标题行
+        header = lines[0].split(",")
+        assert "id" in header
+        assert "title" in header
+        assert "description" in header
+        assert "status" in header
+    
+    def test_export_without_auth(self):
+        """Test exporting CSV without authentication (should fail)"""
+        # 导出 CSV（没有认证头）
+        response = client.get("/todos/export/")
+        
+        # 检查响应（应该失败）
+        assert response.status_code == 401
+    
+    def test_export_data_integrity(self, auth_headers):
+        """Test that exported data matches the actual todos"""
+        # 创建测试 todos
+        test_todos = [
+            {"title": "Todo 1", "description": "Desc 1", "status": "done"},
+            {"title": "Todo 2", "description": None, "status": "not_done"},  # 空描述
+            {"title": "Todo 3", "description": "Desc 3", "status": "not_done"}
+        ]
+        
+        for todo in test_todos:
+            response = client.post("/todos/", json=todo, headers=auth_headers)
+            assert response.status_code == 200
+        
+        # 导出 CSV
+        response = client.get("/todos/export/", headers=auth_headers)
+        
+        # 解析 CSV 内容
+        reader = csv.DictReader(io.StringIO(response.text))
+        exported_todos = list(reader)
+        
+        # 验证数量
+        assert len(exported_todos) == len(test_todos)
+        
+        # 验证每个 todo 的数据
+        for i, test_todo in enumerate(test_todos):
+            exported = exported_todos[i]
+            assert exported["title"] == test_todo["title"]
+            assert exported["status"] == test_todo["status"]
+            # 描述如果是 None 应该是空字符串
+            expected_description = test_todo["description"] if test_todo["description"] else ""
+            assert exported["description"] == expected_description

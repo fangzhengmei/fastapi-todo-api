@@ -96,18 +96,36 @@ def delete_todo(
 
 
 # -------- CSV IMPORT HELPERS -------- #
-def validate_todo_row(row: Dict[str, Any], row_number: int) -> Dict[str, Any]:
-    """Validate a single row from CSV file."""
+def validate_todo_row(row: Dict[str, Any], row_number: int, has_status_column: bool = False) -> Dict[str, Any]:
+    """Validate a single row from CSV file.
+    
+    Args:
+        row: CSV row data
+        row_number: Row number for error reporting
+        has_status_column: Whether the CSV has a status column
+    """
     errors = []
     
     # Check for required fields
     if not row.get("title") or not str(row.get("title")).strip():
         errors.append("Title is required")
     
-    # Validate status if provided
-    status = row.get("status", "not_done")
-    if status and status not in VALID_STATUSES:
-        errors.append(f"Status must be one of: {', '.join(VALID_STATUSES)}")
+    # Validate status
+    if has_status_column:
+        # CSV has status column - check the value
+        status = row.get("status")
+        
+        if status is None or str(status).strip() == "":
+            # Status column exists but value is empty - this is an error
+            errors.append("Status is required when status column is present")
+        else:
+            # Status column exists and has a value - validate it
+            status = str(status).strip()
+            if status not in VALID_STATUSES:
+                errors.append(f"Status must be one of: {', '.join(VALID_STATUSES)}")
+    else:
+        # CSV does not have status column - use default value
+        status = "not_done"
     
     # Validate title length
     title = str(row.get("title", "")).strip()
@@ -166,6 +184,9 @@ def import_todos_from_csv(
         # Try to decode with UTF-8, fallback to latin-1
         try:
             decoded = contents.decode('utf-8')
+            # Strip UTF-8 BOM if present (Excel exported CSV often has this)
+            if decoded.startswith('\ufeff'):
+                decoded = decoded[1:]
         except UnicodeDecodeError:
             decoded = contents.decode('latin-1')
         
@@ -180,6 +201,9 @@ def import_todos_from_csv(
             detail="CSV file must have at least a 'title' column"
         )
     
+    # Check if CSV has status column
+    has_status_column = "status" in csv_reader.fieldnames
+    
     # Process each row
     successful = []
     failed = []
@@ -189,7 +213,7 @@ def import_todos_from_csv(
         row_number += 1  # Start from 2 because header is row 1
         
         # Validate the row
-        validation = validate_todo_row(row, row_number)
+        validation = validate_todo_row(row, row_number, has_status_column)
         
         if validation["valid"]:
             if dry_run:

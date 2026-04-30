@@ -355,6 +355,128 @@ Buy groceries,"Milk, Bread, Eggs",not_done"""
         todos = response.json()
         assert len(todos) == 1
     
+    def test_import_utf8_bom_file(self, auth_headers):
+        """Test importing CSV file with UTF-8 BOM (Excel exported format)"""
+        # 创建带有 UTF-8 BOM 的 CSV 内容
+        # UTF-8 BOM 是字节序列 \xef\xbb\xbf，解码后变成 \ufeff
+        # 模拟 Excel 导出的 CSV，第一列名前有 BOM
+        csv_content_with_bom = '\ufefftitle,description,status\nBuy groceries,"Milk, Bread, Eggs",not_done\nFinish report,"Complete the quarterly report",done'
+        
+        # 上传带有 BOM 的 CSV 文件
+        response = client.post(
+            "/todos/import/",
+            files={"file": ("test_bom.csv", csv_content_with_bom, "text/csv")},
+            headers=auth_headers
+        )
+        
+        # 检查响应（应该成功，因为 BOM 被剥离了）
+        assert response.status_code == 200
+        data = response.json()
+        
+        # 验证导入结果
+        assert data["total"] == 2
+        assert data["successful"] == 2
+        assert data["failed"] == 0
+        
+        # 验证 todos 确实被创建
+        response = client.get("/todos/", headers=auth_headers)
+        assert response.status_code == 200
+        todos = response.json()
+        assert len(todos) == 2
+    
+    def test_import_status_column_with_empty_value(self, auth_headers):
+        """Test importing CSV with status column but empty values (should fail with clear error)"""
+        # 创建 CSV 内容，有 status 列但某些行的 status 为空
+        csv_content = """title,description,status
+Buy groceries,"Milk, Bread, Eggs",not_done
+Finish report,"Complete the quarterly report",
+Call client,"Discuss project details",done"""
+        
+        # 上传 CSV 文件
+        response = client.post(
+            "/todos/import/",
+            files={"file": ("test.csv", csv_content, "text/csv")},
+            headers=auth_headers
+        )
+        
+        # 检查响应
+        assert response.status_code == 200
+        data = response.json()
+        
+        # 验证导入结果（第二行 status 为空，应该失败）
+        assert data["total"] == 3
+        assert data["successful"] == 2
+        assert data["failed"] == 1
+        
+        # 验证失败的行
+        failed_items = data["failed_items"]
+        assert len(failed_items) == 1
+        assert "Status is required when status column is present" in failed_items[0]["errors"][0]
+        
+        # 验证只有 2 个 todos 被创建
+        response = client.get("/todos/", headers=auth_headers)
+        todos = response.json()
+        assert len(todos) == 2
+    
+    def test_import_status_column_with_whitespace_only(self, auth_headers):
+        """Test importing CSV with status column containing only whitespace (should fail)"""
+        # 创建 CSV 内容，有 status 列但值为空格
+        csv_content = """title,description,status
+Buy groceries,"Milk, Bread, Eggs",   
+Finish report,"Complete the quarterly report",not_done"""
+        
+        # 上传 CSV 文件
+        response = client.post(
+            "/todos/import/",
+            files={"file": ("test.csv", csv_content, "text/csv")},
+            headers=auth_headers
+        )
+        
+        # 检查响应
+        assert response.status_code == 200
+        data = response.json()
+        
+        # 验证导入结果（第一行 status 为空格，应该失败）
+        assert data["total"] == 2
+        assert data["successful"] == 1
+        assert data["failed"] == 1
+        
+        # 验证失败的行
+        failed_items = data["failed_items"]
+        assert len(failed_items) == 1
+        assert "Status is required when status column is present" in failed_items[0]["errors"][0]
+    
+    def test_import_no_status_column_uses_default(self, auth_headers):
+        """Test importing CSV without status column (should use default value)"""
+        # 创建 CSV 内容，没有 status 列
+        csv_content = """title,description
+Buy groceries,"Milk, Bread, Eggs"
+Finish report,"Complete the quarterly report"
+Call client,"Discuss project details" """
+        
+        # 上传 CSV 文件
+        response = client.post(
+            "/todos/import/",
+            files={"file": ("test.csv", csv_content, "text/csv")},
+            headers=auth_headers
+        )
+        
+        # 检查响应
+        assert response.status_code == 200
+        data = response.json()
+        
+        # 验证导入结果（没有 status 列，应该全部成功，使用默认值）
+        assert data["total"] == 3
+        assert data["successful"] == 3
+        assert data["failed"] == 0
+        
+        # 验证 todos 被创建且状态为默认值
+        response = client.get("/todos/", headers=auth_headers)
+        todos = response.json()
+        assert len(todos) == 3
+        for todo in todos:
+            assert todo["status"] == "not_done"
+    
     def test_import_file_too_large(self, auth_headers):
         """Test importing a file larger than 1MB (should return 413)"""
         # 创建一个超过 1MB 的 CSV 内容

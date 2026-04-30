@@ -21,18 +21,22 @@ def validate_time_range(
     to_time: Optional[datetime],
     default_from: Optional[datetime] = None
 ) -> tuple[datetime, Optional[datetime]]:
+    from_time_explicit = from_time is not None
+    to_time_explicit = to_time is not None
+    
     normalized_from = normalize_to_utc_naive(from_time)
     normalized_to = normalize_to_utc_naive(to_time)
     
     if normalized_from is None:
         normalized_from = default_from if default_from is not None else get_utc_now_naive()
     
-    if normalized_to is not None and normalized_to < normalized_from:
-        from_str = f"{normalized_from.isoformat()}Z"
-        to_str = f"{normalized_to.isoformat()}Z"
-        raise ValueError(
-            f"Invalid time range: to_time ({to_str}) cannot be earlier than from_time ({from_str})"
-        )
+    if from_time_explicit and to_time_explicit:
+        if normalized_to is not None and normalized_to < normalized_from:
+            from_str = f"{normalized_from.isoformat()}Z"
+            to_str = f"{normalized_to.isoformat()}Z"
+            raise ValueError(
+                f"Invalid time range: to_time ({to_str}) cannot be earlier than from_time ({from_str})"
+            )
     
     return normalized_from, normalized_to
 
@@ -60,12 +64,31 @@ TIME_POLICY_DOC = """
 - `from_time`：查询起始时间（包含），默认值为当前 UTC 时间
 - `to_time`：查询结束时间（包含），可选，不提供则无上限
 
+#### 缺省参数语义规则
+
+| 场景 | from_time | to_time | 行为 |
+|------|-----------|---------|------|
+| 场景1 | 缺省 | 缺省 | 使用当前 UTC 时间作为 from_time，无上限 |
+| 场景2 | 提供 | 缺省 | 使用提供的 from_time，无上限 |
+| 场景3 | 缺省 | 提供 | 使用当前 UTC 时间作为 from_time，使用提供的 to_time |
+| 场景4 | 提供 | 提供 | 使用提供的 from_time 和 to_time |
+
 #### 边界条件
-1. **to_time < from_time**：返回 HTTP 400 错误（无效范围）
-2. **to_time == from_time**：允许，表示查询精确等于该时间点的记录
+
+**仅当两个参数都显式提供时，才进行范围校验：**
+
+1. **to_time < from_time（双参数都提供）**：返回 HTTP 400 错误（无效范围）
+   - 错误消息示例：`Invalid time range: to_time (2026-05-01T10:00:00Z) cannot be earlier than from_time (2026-05-01T12:00:00Z)`
+
+2. **to_time < from_time（单参数提供）**：**不返回错误**，返回空列表
+   - 示例：只提供 to_time 且 to_time 在过去 → 返回空列表，不报错
+   - 示例：提供 from_time 且 from_time 在未来，不提供 to_time → 正常查询
+
+3. **to_time == from_time**：允许，表示查询精确等于该时间点的记录
    - 查询条件：`reminder_time >= from_time AND reminder_time <= to_time`
    - 当 `from_time == to_time` 时，等价于精确匹配
-3. **to_time > from_time**：正常查询时间范围内的记录
+
+4. **to_time > from_time**：正常查询时间范围内的记录
 
 ### 数据库存储
 

@@ -363,3 +363,168 @@ class TestErrorScenarios:
         
         assert response.status_code == 400
         assert "Invalid time range" in response.json()["detail"]
+
+
+class TestDefaultParameterScenarios:
+    def test_scenario1_both_default(self, auth_headers):
+        utc_now = datetime.now(timezone.utc)
+        future_time = (utc_now + timedelta(hours=1)).replace(tzinfo=timezone.utc)
+        past_time = (utc_now - timedelta(hours=1)).replace(tzinfo=timezone.utc)
+        
+        client.post("/todos/", json={
+            "title": "Scenario1 Future Todo",
+            "status": "not_done",
+            "reminder_time": future_time.isoformat()
+        }, headers=auth_headers)
+        
+        client.post("/todos/", json={
+            "title": "Scenario1 Past Todo",
+            "status": "not_done",
+            "reminder_time": past_time.isoformat()
+        }, headers=auth_headers)
+        
+        response = client.get("/todos/upcoming/", headers=auth_headers)
+        
+        assert response.status_code == 200
+        titles = [t["title"] for t in response.json()]
+        assert "Scenario1 Future Todo" in titles
+        assert "Scenario1 Past Todo" not in titles
+    
+    def test_scenario2_only_from_time(self, auth_headers):
+        utc_now = datetime.now(timezone.utc)
+        from_time = (utc_now + timedelta(hours=2)).replace(tzinfo=timezone.utc)
+        reminder_in = (utc_now + timedelta(hours=3)).replace(tzinfo=timezone.utc)
+        reminder_out = (utc_now + timedelta(hours=1)).replace(tzinfo=timezone.utc)
+        
+        client.post("/todos/", json={
+            "title": "Scenario2 In Todo",
+            "status": "not_done",
+            "reminder_time": reminder_in.isoformat()
+        }, headers=auth_headers)
+        
+        client.post("/todos/", json={
+            "title": "Scenario2 Out Todo",
+            "status": "not_done",
+            "reminder_time": reminder_out.isoformat()
+        }, headers=auth_headers)
+        
+        response = client.get(
+            f"/todos/upcoming/?from_time={format_time_for_url(from_time)}",
+            headers=auth_headers
+        )
+        
+        assert response.status_code == 200
+        titles = [t["title"] for t in response.json()]
+        assert "Scenario2 In Todo" in titles
+        assert "Scenario2 Out Todo" not in titles
+    
+    def test_scenario3_only_to_time_not_error(self, auth_headers):
+        utc_now = datetime.now(timezone.utc)
+        to_time = (utc_now - timedelta(hours=1)).replace(tzinfo=timezone.utc)
+        
+        response = client.get(
+            f"/todos/upcoming/?to_time={format_time_for_url(to_time)}",
+            headers=auth_headers
+        )
+        
+        assert response.status_code == 200
+        assert isinstance(response.json(), list)
+    
+    def test_scenario3_only_to_time_returns_empty(self, auth_headers):
+        utc_now = datetime.now(timezone.utc)
+        future_time = (utc_now + timedelta(hours=1)).replace(tzinfo=timezone.utc)
+        to_time = (utc_now - timedelta(hours=1)).replace(tzinfo=timezone.utc)
+        
+        client.post("/todos/", json={
+            "title": "Scenario3 Future Todo",
+            "status": "not_done",
+            "reminder_time": future_time.isoformat()
+        }, headers=auth_headers)
+        
+        response = client.get(
+            f"/todos/upcoming/?to_time={format_time_for_url(to_time)}",
+            headers=auth_headers
+        )
+        
+        assert response.status_code == 200
+        titles = [t["title"] for t in response.json()]
+        assert "Scenario3 Future Todo" not in titles
+    
+    def test_scenario4_both_provided_valid(self, auth_headers):
+        utc_now = datetime.now(timezone.utc)
+        from_time = (utc_now + timedelta(hours=1)).replace(tzinfo=timezone.utc)
+        to_time = (utc_now + timedelta(hours=4)).replace(tzinfo=timezone.utc)
+        reminder_in = (utc_now + timedelta(hours=2)).replace(tzinfo=timezone.utc)
+        
+        client.post("/todos/", json={
+            "title": "Scenario4 In Todo",
+            "status": "not_done",
+            "reminder_time": reminder_in.isoformat()
+        }, headers=auth_headers)
+        
+        response = client.get(
+            f"/todos/upcoming/?from_time={format_time_for_url(from_time)}&to_time={format_time_for_url(to_time)}",
+            headers=auth_headers
+        )
+        
+        assert response.status_code == 200
+        titles = [t["title"] for t in response.json()]
+        assert "Scenario4 In Todo" in titles
+    
+    def test_scenario4_both_provided_invalid_returns_error(self, auth_headers):
+        utc_now = datetime.now(timezone.utc)
+        from_time = (utc_now + timedelta(hours=4)).replace(tzinfo=timezone.utc)
+        to_time = (utc_now + timedelta(hours=1)).replace(tzinfo=timezone.utc)
+        
+        response = client.get(
+            f"/todos/upcoming/?from_time={format_time_for_url(from_time)}&to_time={format_time_for_url(to_time)}",
+            headers=auth_headers
+        )
+        
+        assert response.status_code == 400
+        assert "Invalid time range" in response.json()["detail"]
+
+
+class TestValidateTimeRangeUnit:
+    def test_both_provided_invalid_raises(self):
+        from_time = datetime(2026, 5, 1, 12, 0, 0)
+        to_time = datetime(2026, 5, 1, 10, 0, 0)
+        
+        with pytest.raises(ValueError, match="Invalid time range"):
+            validate_time_range(from_time, to_time)
+    
+    def test_only_to_time_provided_too_early_no_error(self):
+        from_time = None
+        to_time = datetime(2026, 5, 1, 10, 0, 0)
+        default_from = datetime(2026, 5, 1, 12, 0, 0)
+        
+        result_from, result_to = validate_time_range(from_time, to_time, default_from)
+        
+        assert result_from == default_from
+        assert result_to == to_time
+    
+    def test_only_from_time_provided_no_error(self):
+        from_time = datetime(2026, 5, 1, 12, 0, 0)
+        to_time = None
+        
+        result_from, result_to = validate_time_range(from_time, to_time)
+        
+        assert result_from == from_time
+        assert result_to is None
+    
+    def test_both_default_no_error(self):
+        default_from = datetime(2026, 5, 1, 12, 0, 0)
+        
+        result_from, result_to = validate_time_range(None, None, default_from)
+        
+        assert result_from == default_from
+        assert result_to is None
+    
+    def test_both_provided_valid_returns_tuple(self):
+        from_time = datetime(2026, 5, 1, 10, 0, 0)
+        to_time = datetime(2026, 5, 1, 12, 0, 0)
+        
+        result_from, result_to = validate_time_range(from_time, to_time)
+        
+        assert result_from == from_time
+        assert result_to == to_time

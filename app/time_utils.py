@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 
@@ -14,6 +14,10 @@ def normalize_to_utc_naive(dt: Optional[datetime]) -> Optional[datetime]:
 
 def get_utc_now_naive() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def format_time_for_error(dt: datetime) -> str:
+    return f"{dt.isoformat()}Z"
 
 
 def validate_time_range(
@@ -32,10 +36,12 @@ def validate_time_range(
     
     if from_time_explicit and to_time_explicit:
         if normalized_to is not None and normalized_to < normalized_from:
-            from_str = f"{normalized_from.isoformat()}Z"
-            to_str = f"{normalized_to.isoformat()}Z"
+            from_str = format_time_for_error(normalized_from)
+            to_str = format_time_for_error(normalized_to)
             raise ValueError(
-                f"Invalid time range: to_time ({to_str}) cannot be earlier than from_time ({from_str})"
+                f"Invalid time range: to_time ({to_str}) cannot be earlier than from_time ({from_str}). "
+                f"Note: Both parameters are explicitly provided, so range validation is enforced. "
+                f"If you intended to query past data, use only 'to_time' parameter."
             )
     
     return normalized_from, normalized_to
@@ -64,31 +70,50 @@ TIME_POLICY_DOC = """
 - `from_time`：查询起始时间（包含），默认值为当前 UTC 时间
 - `to_time`：查询结束时间（包含），可选，不提供则无上限
 
-#### 缺省参数语义规则
+#### 缺省参数语义规则（完整覆盖）
 
-| 场景 | from_time | to_time | 行为 |
-|------|-----------|---------|------|
-| 场景1 | 缺省 | 缺省 | 使用当前 UTC 时间作为 from_time，无上限 |
-| 场景2 | 提供 | 缺省 | 使用提供的 from_time，无上限 |
-| 场景3 | 缺省 | 提供 | 使用当前 UTC 时间作为 from_time，使用提供的 to_time |
-| 场景4 | 提供 | 提供 | 使用提供的 from_time 和 to_time |
+| 场景 | from_time | to_time | 详细行为 | 查询条件 |
+|------|-----------|---------|----------|----------|
+| **场景1** | 缺省 | 缺省 | 使用当前 UTC 时间作为 from_time，无上限 | `reminder_time >= now` |
+| **场景2** | 提供 | 缺省 | 使用提供的 from_time，无上限 | `reminder_time >= from_time` |
+| **场景3a** | 缺省 | 提供（> 当前时间） | 使用当前 UTC 时间作为 from_time，to_time 有效 | `now <= reminder_time <= to_time` |
+| **场景3b** | 缺省 | 提供（== 当前时间） | 使用当前 UTC 时间作为 from_time，精确匹配 | `reminder_time == now` |
+| **场景3c** | 缺省 | 提供（< 当前时间） | 使用当前 UTC 时间作为 from_time，返回空列表（**不报错**） | 无匹配 |
+| **场景4** | 提供 | 提供 | 校验 `to_time >= from_time`，失败则报错 | 取决于校验结果 |
 
-#### 边界条件
+#### 边界条件详细规则
 
-**仅当两个参数都显式提供时，才进行范围校验：**
+**核心原则：仅当两个参数都显式提供时，才进行范围校验！**
 
-1. **to_time < from_time（双参数都提供）**：返回 HTTP 400 错误（无效范围）
-   - 错误消息示例：`Invalid time range: to_time (2026-05-01T10:00:00Z) cannot be earlier than from_time (2026-05-01T12:00:00Z)`
+| 条件 | 行为 | 示例 |
+|------|------|------|
+| **to_time < from_time（双参数都提供）** | 返回 **HTTP 400** 错误（无效范围） | `from=12:00, to=10:00` → 400 错误 |
+| **to_time < from_time（单参数提供）** | **不返回错误**，返回空列表 | 仅 `to=10:00`（当前时间 12:00）→ 空列表 |
+| **to_time == from_time** | 允许，精确匹配该时间点 | `from=10:00, to=10:00` → 精确匹配 |
+| **to_time > from_time** | 正常查询时间范围内的记录 | `from=10:00, to=12:00` → 范围查询 |
 
-2. **to_time < from_time（单参数提供）**：**不返回错误**，返回空列表
-   - 示例：只提供 to_time 且 to_time 在过去 → 返回空列表，不报错
-   - 示例：提供 from_time 且 from_time 在未来，不提供 to_time → 正常查询
+#### 错误返回格式
 
-3. **to_time == from_time**：允许，表示查询精确等于该时间点的记录
-   - 查询条件：`reminder_time >= from_time AND reminder_time <= to_time`
-   - 当 `from_time == to_time` 时，等价于精确匹配
+**HTTP 400 错误响应**（仅当双参数都提供且范围无效时）：
 
-4. **to_time > from_time**：正常查询时间范围内的记录
+```json
+{
+  "detail": "Invalid time range: to_time (2026-05-01T10:00:00Z) cannot be earlier than from_time (2026-05-01T12:00:00Z). Note: Both parameters are explicitly provided, so range validation is enforced. If you intended to query past data, use only 'to_time' parameter."
+}
+```
+
+**错误消息包含**：
+1. 具体的时间值（带 Z 后缀表示 UTC）
+2. 说明为什么触发校验（双参数都提供）
+3. 提示如何查询过去数据（仅使用 to_time）
+
+### 极端时间值处理
+
+| 场景 | 行为 |
+|------|------|
+| **极远未来时间**（如 9999-12-31） | 正常处理，不报错 |
+| **极远过去时间**（如 0001-01-01） | 正常处理，不报错 |
+| **微秒级精度** | 保留完整微秒精度进行比较 |
 
 ### 数据库存储
 

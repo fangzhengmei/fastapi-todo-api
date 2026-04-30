@@ -528,3 +528,172 @@ class TestValidateTimeRangeUnit:
         
         assert result_from == from_time
         assert result_to == to_time
+
+
+class TestScenario3SubScenarios:
+    def test_scenario3a_to_time_greater_than_current(self, auth_headers):
+        utc_now = datetime.now(timezone.utc)
+        to_time = (utc_now + timedelta(hours=5)).replace(tzinfo=timezone.utc)
+        reminder_time = (utc_now + timedelta(hours=2)).replace(tzinfo=timezone.utc)
+        
+        client.post("/todos/", json={
+            "title": "Scenario3a Todo",
+            "status": "not_done",
+            "reminder_time": reminder_time.isoformat()
+        }, headers=auth_headers)
+        
+        response = client.get(
+            f"/todos/upcoming/?to_time={format_time_for_url(to_time)}",
+            headers=auth_headers
+        )
+        
+        assert response.status_code == 200
+        titles = [t["title"] for t in response.json()]
+        assert "Scenario3a Todo" in titles
+    
+    def test_scenario3c_to_time_less_than_current_no_error(self, auth_headers):
+        utc_now = datetime.now(timezone.utc)
+        to_time = (utc_now - timedelta(hours=1)).replace(tzinfo=timezone.utc)
+        
+        response = client.get(
+            f"/todos/upcoming/?to_time={format_time_for_url(to_time)}",
+            headers=auth_headers
+        )
+        
+        assert response.status_code == 200
+        assert isinstance(response.json(), list)
+    
+    def test_scenario3c_to_time_less_than_current_returns_empty(self, auth_headers):
+        utc_now = datetime.now(timezone.utc)
+        future_time = (utc_now + timedelta(hours=1)).replace(tzinfo=timezone.utc)
+        to_time = (utc_now - timedelta(hours=1)).replace(tzinfo=timezone.utc)
+        
+        client.post("/todos/", json={
+            "title": "Scenario3c Future Todo",
+            "status": "not_done",
+            "reminder_time": future_time.isoformat()
+        }, headers=auth_headers)
+        
+        response = client.get(
+            f"/todos/upcoming/?to_time={format_time_for_url(to_time)}",
+            headers=auth_headers
+        )
+        
+        assert response.status_code == 200
+        titles = [t["title"] for t in response.json()]
+        assert "Scenario3c Future Todo" not in titles
+
+
+class TestExtremeTimeValues:
+    def test_far_future_time_no_error(self, auth_headers):
+        utc_now = datetime.now(timezone.utc)
+        far_future = (utc_now + timedelta(days=365 * 100)).replace(tzinfo=timezone.utc)
+        
+        response = client.post("/todos/", json={
+            "title": "Far Future Todo",
+            "status": "not_done",
+            "reminder_time": far_future.isoformat()
+        }, headers=auth_headers)
+        
+        assert response.status_code == 200
+        
+        from_time = (utc_now + timedelta(days=365 * 50)).replace(tzinfo=timezone.utc)
+        to_time = (utc_now + timedelta(days=365 * 200)).replace(tzinfo=timezone.utc)
+        
+        query_response = client.get(
+            f"/todos/upcoming/?from_time={format_time_for_url(from_time)}&to_time={format_time_for_url(to_time)}",
+            headers=auth_headers
+        )
+        
+        assert query_response.status_code == 200
+        titles = [t["title"] for t in query_response.json()]
+        assert "Far Future Todo" in titles
+    
+    def test_past_time_no_error(self, auth_headers):
+        utc_now = datetime.now(timezone.utc)
+        past_time = datetime(2000, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        
+        response = client.post("/todos/", json={
+            "title": "Past Time Todo",
+            "status": "not_done",
+            "reminder_time": past_time.isoformat()
+        }, headers=auth_headers)
+        
+        assert response.status_code == 200
+        
+        from_time = datetime(1990, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        to_time = datetime(2010, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        
+        query_response = client.get(
+            f"/todos/upcoming/?from_time={format_time_for_url(from_time)}&to_time={format_time_for_url(to_time)}",
+            headers=auth_headers
+        )
+        
+        assert query_response.status_code == 200
+        titles = [t["title"] for t in query_response.json()]
+        assert "Past Time Todo" in titles
+    
+    def test_microsecond_precision_preserved(self):
+        time_with_micro = datetime(2026, 5, 1, 10, 0, 0, 123456, tzinfo=timezone.utc)
+        
+        result = normalize_to_utc_naive(time_with_micro)
+        
+        assert result.microsecond == 123456
+    
+    def test_microsecond_comparison_precise(self):
+        from_time = datetime(2026, 5, 1, 10, 0, 0, 500000)
+        to_time = datetime(2026, 5, 1, 10, 0, 0, 499999)
+        
+        with pytest.raises(ValueError, match="Invalid time range"):
+            validate_time_range(from_time, to_time)
+
+
+class TestErrorMessageConsistency:
+    def test_error_message_contains_time_values(self, auth_headers):
+        utc_now = datetime.now(timezone.utc)
+        from_time = (utc_now + timedelta(hours=5)).replace(tzinfo=timezone.utc)
+        to_time = (utc_now + timedelta(hours=3)).replace(tzinfo=timezone.utc)
+        
+        response = client.get(
+            f"/todos/upcoming/?from_time={format_time_for_url(from_time)}&to_time={format_time_for_url(to_time)}",
+            headers=auth_headers
+        )
+        
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        
+        assert "Z)" in detail
+        assert "Invalid time range" in detail
+        assert "cannot be earlier than" in detail
+    
+    def test_error_message_contains_helpful_hint(self, auth_headers):
+        utc_now = datetime.now(timezone.utc)
+        from_time = (utc_now + timedelta(hours=5)).replace(tzinfo=timezone.utc)
+        to_time = (utc_now + timedelta(hours=3)).replace(tzinfo=timezone.utc)
+        
+        response = client.get(
+            f"/todos/upcoming/?from_time={format_time_for_url(from_time)}&to_time={format_time_for_url(to_time)}",
+            headers=auth_headers
+        )
+        
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        
+        assert "Both parameters are explicitly provided" in detail
+        assert "use only 'to_time' parameter" in detail
+    
+    def test_error_message_with_timezone_conversion(self, auth_headers):
+        utc_now = datetime.now(timezone.utc)
+        from_beijing = (utc_now + timedelta(hours=13)).replace(tzinfo=timezone(timedelta(hours=8)))
+        to_utc = (utc_now + timedelta(hours=4)).replace(tzinfo=timezone.utc)
+        
+        response = client.get(
+            f"/todos/upcoming/?from_time={format_time_for_url(from_beijing)}&to_time={format_time_for_url(to_utc)}",
+            headers=auth_headers
+        )
+        
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        
+        from_utc_naive = from_beijing.astimezone(timezone.utc).replace(tzinfo=None)
+        assert from_utc_naive.isoformat() in detail

@@ -148,17 +148,21 @@ def import_todos_from_csv(
     if not file.filename.endswith('.csv'):
         raise HTTPException(status_code=400, detail="File must be a CSV file")
     
-    # Read and parse CSV
+    # Read file content
     try:
         contents = file.file.read()
-        
-        # Validate file size (1MB limit)
-        if len(contents) > MAX_FILE_SIZE:
-            raise HTTPException(
-                status_code=413, 
-                detail=f"File too large. Maximum size is {MAX_FILE_SIZE / (1024 * 1024)}MB"
-            )
-        
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
+    
+    # Validate file size (1MB limit) - outside exception handling for clarity
+    if len(contents) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413, 
+            detail=f"File too large. Maximum size is {MAX_FILE_SIZE / (1024 * 1024)}MB"
+        )
+    
+    # Decode and parse CSV
+    try:
         # Try to decode with UTF-8, fallback to latin-1
         try:
             decoded = contents.decode('utf-8')
@@ -166,11 +170,8 @@ def import_todos_from_csv(
             decoded = contents.decode('latin-1')
         
         csv_reader = csv.DictReader(io.StringIO(decoded))
-    except HTTPException:
-        # Re-raise HTTP exceptions (like 413)
-        raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to read CSV file: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Failed to parse CSV file: {str(e)}")
     
     # Validate CSV headers
     if not csv_reader.fieldnames or "title" not in csv_reader.fieldnames:

@@ -65,17 +65,11 @@ class TodoImportSuccessItem(BaseModel):
     title: str
     id: Optional[int] = None
 
-    class Config:
-        from_attributes = True
-
 
 class TodoImportFailureItem(BaseModel):
     row_number: int
     title: str
     errors: List[str]
-
-    class Config:
-        from_attributes = True
 
 
 class TodoImportResponse(BaseModel):
@@ -84,7 +78,4 @@ class TodoImportResponse(BaseModel):
     failed: int
     successful_items: List[TodoImportSuccessItem]
     failed_items: List[TodoImportFailureItem]
-
-    class Config:
-        from_attributes = True
 
